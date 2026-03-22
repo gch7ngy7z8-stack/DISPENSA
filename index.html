@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Dispensa" />
+  <title>Dispensa · Casa Malossini</title>
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; padding: 0; background: #f7f4ef; font-family: Georgia, serif; }
+    body { padding-top: env(safe-area-inset-top); }
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    input[type=number] { -moz-appearance: textfield; }
+    button { -webkit-appearance: none; }
+  </style>
+</head>
+<body>
+<div id="app"></div>
+
+<script>
+// ── DATI ────────────────────────────────────────────────────────────────────
+const CATS = {
+  fruttaSecca: {
+    label: "Frutta Secca & Semi Oleosi", emoji: "🥜",
+    items: ["Mandorle","Nocciole","Noci","Noci pecan","Uvetta","Datteri",
+            "Farina di cocco","Farina di mandorle","Cocco grattugiato",
+            "Semi di lino","Semi di girasole","Semi di sesamo",
+            "Semi di zucca","Semi di chia","Burro d'arachidi",
+            "Crema di nocciole","Crema di mandorle","Tahina"]
+  },
+  legumi: {
+    label: "Legumi", emoji: "🫘",
+    items: ["Ceci","Fagioli borlotti","Fagioli cannellini","Cicerchie",
+            "Fave","Cece nero","Lenticchie","Fagioli neri"]
+  },
+  cereali: {
+    label: "Cereali", emoji: "🌾",
+    items: ["Grano","Grano saraceno","Segale","Avena","Farro",
+            "Orzo","Sorgo","Miglio","Quinoa","Farina di ceci","Farina di castagne"]
+  }
+};
+
+const STORAGE_KEY = "dispensa_malossini_v2";
+const STATUS_COLORS = { ok: "#22c55e", low: "#f59e0b", out: "#ef4444" };
+const STATUS_LABELS = { ok: "Disponibile", low: "Da riordinare", out: "Esaurito" };
+
+function getStatus(qty) {
+  if (qty === 0) return "out";
+  if (qty === 1) return "low";
+  return "ok";
+}
+
+function buildInitial() {
+  const inv = {};
+  Object.entries(CATS).forEach(([catId, cat]) => {
+    inv[catId] = cat.items.slice().sort((a,b) => a.localeCompare(b, "it", {sensitivity:"base"})).map((name, i) => ({
+      id: catId + "_" + i, name, qty: 0, unit: "conf.", note: ""
+    }));
+  });
+  return inv;
+}
+
+function loadInv() {
+  try {
+    const r = localStorage.getItem(STORAGE_KEY);
+    if (r) {
+      const inv = JSON.parse(r);
+      // Riordina alfabeticamente tutte le categorie
+      Object.keys(inv).forEach(catId => {
+        inv[catId] = inv[catId].slice().sort((a, b) => a.name.localeCompare(b.name, "it", { sensitivity: "base" }));
+      });
+      return inv;
+    }
+  } catch {}
+  return buildInitial();
+}
+function saveInv(inv) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(inv)); } catch {}
+}
+
+// ── STATO ────────────────────────────────────────────────────────────────────
+let state = {
+  inv: loadInv(),
+  tab: "fruttaSecca",
+  view: "inventory",   // inventory | order
+  modal: null,         // null | "add" | "backup"
+  expandedId: null,
+  newName: "",
+  newUnit: "conf.",
+  toast: null,
+  toastTimer: null
+};
+
+function setState(patch) {
+  Object.assign(state, typeof patch === "function" ? patch(state) : patch);
+  render();
+}
+
+function showToast(msg) {
+  if (state.toastTimer) clearTimeout(state.toastTimer);
+  const t = setTimeout(() => setState({ toast: null, toastTimer: null }), 2200);
+  setState({ toast: msg, toastTimer: t });
+}
+
+// ── LOGICA ───────────────────────────────────────────────────────────────────
+function updateQty(catId, itemId, delta) {
+  const inv = JSON.parse(JSON.stringify(state.inv));
+  inv[catId] = inv[catId].map(it =>
+    it.id === itemId ? { ...it, qty: Math.max(0, it.qty + delta) } : it
+  );
+  saveInv(inv);
+  setState({ inv });
+}
+
+function setQtyDirect(catId, itemId, val) {
+  const n = parseInt(val);
+  if (isNaN(n) || n < 0) return;
+  const inv = JSON.parse(JSON.stringify(state.inv));
+  inv[catId] = inv[catId].map(it => it.id === itemId ? { ...it, qty: n } : it);
+  saveInv(inv);
+  setState({ inv });
+}
+
+function updateField(catId, itemId, field, value) {
+  const inv = JSON.parse(JSON.stringify(state.inv));
+  inv[catId] = inv[catId].map(it => it.id === itemId ? { ...it, [field]: value } : it);
+  saveInv(inv);
+  setState({ inv });
+}
+
+function sortCat(arr) {
+  return arr.slice().sort((a, b) => a.name.localeCompare(b.name, "it", { sensitivity: "base" }));
+}
+
+function addItem() {
+  if (!state.newName.trim()) return;
+  const catId = state.tab;
+  const inv = JSON.parse(JSON.stringify(state.inv));
+  inv[catId].push({ id: catId + "_c_" + Date.now(), name: state.newName.trim(), qty: 0, unit: state.newUnit || "conf.", note: "" });
+  inv[catId] = sortCat(inv[catId]);
+  saveInv(inv);
+  setState({ inv, modal: null, newName: "", newUnit: "conf." });
+  showToast("✅ Prodotto aggiunto");
+}
+
+function deleteItem(catId, itemId) {
+  const inv = JSON.parse(JSON.stringify(state.inv));
+  inv[catId] = inv[catId].filter(it => it.id !== itemId);
+  saveInv(inv);
+  setState({ inv, expandedId: null });
+  showToast("🗑️ Rimosso");
+}
+
+function alertCount(catId) {
+  return (state.inv[catId] || []).filter(it => getStatus(it.qty) !== "ok").length;
+}
+function totalAlert() {
+  return Object.keys(CATS).reduce((a, c) => a + alertCount(c), 0);
+}
+
+// ── BACKUP ───────────────────────────────────────────────────────────────────
+function exportJSON() {
+  const data = { version: 2, date: new Date().toISOString(), inventory: state.inv };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "dispensa-malossini-" + new Date().toISOString().slice(0,10) + ".json";
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast("💾 Backup scaricato");
+}
+
+function exportText() {
+  const now = new Date().toLocaleDateString("it-IT", { day:"2-digit", month:"long", year:"numeric" });
+  let txt = "🏺 DISPENSA CASA MALOSSINI\nAggiornata al " + now + "\n" + "─".repeat(36) + "\n\n";
+  Object.entries(CATS).forEach(([catId, catInfo]) => {
+    const items = state.inv[catId] || [];
+    txt += catInfo.emoji + " " + catInfo.label.toUpperCase() + "\n" + "─".repeat(28) + "\n";
+    const groups = { out: [], low: [], ok: [] };
+    items.forEach(it => groups[getStatus(it.qty)].push(it));
+    if (groups.out.length) { txt += "\n🔴 ESAURITI\n"; groups.out.forEach(it => txt += "  • " + it.name + "  [0 " + it.unit + "]" + (it.note ? "  — " + it.note : "") + "\n"); }
+    if (groups.low.length) { txt += "\n🟠 SCORTA BASSA\n"; groups.low.forEach(it => txt += "  • " + it.name + "  [1 " + it.unit + "]" + (it.note ? "  — " + it.note : "") + "\n"); }
+    if (groups.ok.length) { txt += "\n🟢 DISPONIBILI\n"; groups.ok.forEach(it => txt += "  • " + it.name + "  [" + it.qty + " " + it.unit + "]" + (it.note ? "  — " + it.note : "") + "\n"); }
+    txt += "\n";
+  });
+  const toOrder = Object.values(state.inv).flat().filter(it => getStatus(it.qty) !== "ok");
+  txt += "─".repeat(36) + "\nDA RIORDINARE: " + toOrder.length + " prodotti\n";
+  toOrder.forEach(it => txt += "  · " + it.name + "\n");
+  const blob = new Blob([txt], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "dispensa-malossini-" + new Date().toISOString().slice(0,10) + ".txt";
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast("📄 Riepilogo scaricato");
+}
+
+function importJSON(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const parsed = JSON.parse(ev.target.result);
+      if (parsed.inventory) {
+        saveInv(parsed.inventory);
+        setState({ inv: parsed.inventory, modal: null });
+        showToast("✅ Dati ripristinati!");
+      } else { showToast("⚠️ File non valido"); }
+    } catch { showToast("⚠️ Errore nel file"); }
+  };
+  reader.readAsText(file);
+  e.target.value = "";
+}
+
+// ── HTML HELPERS ─────────────────────────────────────────────────────────────
+function dot(qty, size) {
+  size = size || 10;
+  const c = STATUS_COLORS[getStatus(qty)];
+  return `<span style="display:inline-block;width:${size}px;height:${size}px;border-radius:50%;background:${c};box-shadow:0 0 5px ${c}88;flex-shrink:0"></span>`;
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+}
+
+// ── RENDER ───────────────────────────────────────────────────────────────────
+function render() {
+  document.getElementById("app").innerHTML = state.view === "order" ? renderOrder() : renderInventory();
+  attachEvents();
+}
+
+// ── VISTA RIORDINO ────────────────────────────────────────────────────────────
+function renderOrder() {
+  const ta = totalAlert();
+  let rows = "";
+  Object.entries(CATS).forEach(([catId, catInfo]) => {
+    const allItems = state.inv[catId] || [];
+    const needOrder = allItems.filter(it => getStatus(it.qty) !== "ok");
+    const stocked   = allItems.filter(it => getStatus(it.qty) === "ok");
+
+    let tableRows = "";
+    if (needOrder.length === 0) {
+      tableRows += `<div style="padding:12px 14px;color:#3a3a3a;font-family:sans-serif;font-size:13px">Tutto disponibile ✓</div>`;
+    } else {
+      needOrder.forEach((it, i) => {
+        const s = getStatus(it.qty);
+        const bg = s === "out" ? "#1a0808" : "#191200";
+        const border = i < needOrder.length-1 ? "border-bottom:1px solid #1c1c1c;" : "";
+        tableRows += `<div style="display:grid;grid-template-columns:1fr 70px 90px;padding:11px 14px;${border}background:${bg};align-items:center">
+          <span style="font-size:14px;color:#f0ebe0">${esc(it.name)}</span>
+          <span style="font-family:sans-serif;font-size:13px;color:#777">${it.qty} ${esc(it.unit)}</span>
+          <div style="display:flex;align-items:center;gap:5px">${dot(it.qty,7)}<span style="font-family:sans-serif;font-size:11px;color:${s==="out"?"#ef4444":"#f59e0b"}">${STATUS_LABELS[s]}</span></div>
+        </div>`;
+      });
+    }
+    if (stocked.length > 0) {
+      tableRows += `<div style="padding:6px 14px;background:#141414;border-top:1px solid #222"><span style="font-family:sans-serif;font-size:10px;letter-spacing:2px;color:#2e2e2e;text-transform:uppercase">Disponibile (${stocked.length})</span></div>`;
+      stocked.forEach((it, i) => {
+        const border = i < stocked.length-1 ? "border-bottom:1px solid #181818;" : "";
+        tableRows += `<div style="display:grid;grid-template-columns:1fr 70px 90px;padding:8px 14px;align-items:center;opacity:.4;${border}">
+          <span style="font-size:13px;color:#888">${esc(it.name)}</span>
+          <span style="font-family:sans-serif;font-size:12px;color:#555">${it.qty} ${esc(it.unit)}</span>
+          ${dot(it.qty,7)}
+        </div>`;
+      });
+    }
+
+    const badge = needOrder.length > 0 ? `<span style="background:#ef4444;color:white;border-radius:10px;padding:2px 8px;font-size:10px;font-family:sans-serif;font-weight:700;margin-left:auto">${needOrder.length} da riordinare</span>` : "";
+    rows += `
+      <div style="margin-bottom:24px">
+        <div style="display:flex;align-items:center;gap:8px;margin:20px 0 8px">
+          <span style="font-size:18px">${catInfo.emoji}</span>
+          <span style="font-family:sans-serif;font-size:11px;letter-spacing:2px;color:#666;text-transform:uppercase;font-weight:700">${esc(catInfo.label)}</span>
+          ${badge}
+        </div>
+        <div style="background:#181818;border-radius:16px;overflow:hidden;border:1px solid #252525">
+          <div style="display:grid;grid-template-columns:1fr 70px 90px;padding:8px 14px;background:#1e1e1e;border-bottom:1px solid #252525">
+            ${["Prodotto","Scorta","Stato"].map(h=>`<span style="font-family:sans-serif;font-size:10px;letter-spacing:2px;color:#444;text-transform:uppercase;font-weight:700">${h}</span>`).join("")}
+          </div>
+          ${tableRows}
+        </div>
+      </div>`;
+  });
+
+  if (ta === 0) rows = `<div style="text-align:center;padding:60px;color:#444;font-family:sans-serif;font-size:14px">🟢 Dispensa completa, nulla da riordinare!</div>`;
+
+  return `
+  <div style="min-height:100vh;background:#0d0d0d;font-family:Georgia,serif;max-width:430px;margin:0 auto;padding-bottom:48px;color:#f0ebe0">
+    <div style="padding:28px 20px 16px;border-bottom:1px solid #222;display:flex;align-items:center;gap:14px;position:sticky;top:0;background:#0d0d0d;z-index:10">
+      <button onclick="setState({view:'inventory'})" style="background:none;border:none;color:#f0ebe0;font-size:22px;cursor:pointer;padding:0;line-height:1">←</button>
+      <div>
+        <p style="margin:0;font-size:10px;letter-spacing:3px;color:#555;text-transform:uppercase;font-family:sans-serif">Casa Malossini</p>
+        <h2 style="margin:0;font-size:20px;font-weight:normal">📋 Riepilogo Riordino</h2>
+      </div>
+    </div>
+    <div style="padding:8px 16px">${rows}</div>
+    ${renderToast()}
+  </div>`;
+}
+
+// ── VISTA INVENTARIO ──────────────────────────────────────────────────────────
+function renderInventory() {
+  const ta = totalAlert();
+  const cat = CATS[state.tab];
+  const items = state.inv[state.tab] || [];
+
+  // TABS
+  const tabs = Object.entries(CATS).map(([catId, catInfo]) => {
+    const al = alertCount(catId);
+    const active = state.tab === catId;
+    const badge = al > 0 ? `<span style="position:absolute;top:5px;right:8px;background:#ef4444;color:white;border-radius:50%;width:15px;height:15px;font-size:9px;display:flex;align-items:center;justify-content:center;font-weight:900">${al}</span>` : "";
+    return `<button onclick="setState({tab:'${catId}',expandedId:null})" style="flex:1;padding:10px 6px;background:none;border:none;border-bottom:${active?"2.5px solid #f5f0e6":"2.5px solid transparent"};color:${active?"#f5f0e6":"#6b5a40"};font-family:sans-serif;font-size:10px;font-weight:${active?700:400};cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:3px;position:relative">
+      <span style="font-size:18px">${catInfo.emoji}</span>
+      <span>${catInfo.label.split(" ")[0]}</span>
+      ${badge}
+    </button>`;
+  }).join("");
+
+  // LISTA PRODOTTI
+  const productRows = items.map(item => {
+    const s = getStatus(item.qty);
+    const border = s==="out" ? "1.5px solid #fca5a5" : s==="low" ? "1.5px solid #fcd34d" : "1.5px solid #f0ece4";
+    const expanded = state.expandedId === item.id;
+
+    const expandedRow = expanded ? `
+      <div style="padding:0 14px 14px;border-top:1px solid #f5f0e8;padding-top:10px;display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-family:sans-serif;font-size:12px;color:#9a8a6a;flex-shrink:0">Unità:</span>
+          <input value="${esc(item.unit)}" oninput="updateField('${state.tab}','${item.id}','unit',this.value)"
+            style="flex:1;border:1px solid #e5ddd0;border-radius:8px;padding:5px 8px;font-family:sans-serif;font-size:13px;outline:none" />
+          <button onclick="deleteItem('${state.tab}','${item.id}')"
+            style="background:#fee2e2;border:none;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer;color:#b91c1c;font-family:sans-serif;font-weight:600">Elimina</button>
+        </div>
+        <input value="${esc(item.note)}" placeholder="Note (marca, formato, fornitore…)" oninput="updateField('${state.tab}','${item.id}','note',this.value)"
+          style="border:1px solid #e5ddd0;border-radius:8px;padding:6px 10px;font-family:sans-serif;font-size:13px;outline:none;color:#5a4a30" />
+      </div>` : "";
+
+    return `
+      <div style="background:white;border-radius:16px;margin-bottom:8px;overflow:hidden;box-shadow:0 1px 6px rgba(0,0,0,.06);border:${border};transition:border-color .25s">
+        <div style="display:flex;align-items:center;padding:13px 14px;gap:10px">
+          ${dot(item.qty, 10)}
+          <span style="flex:1;font-size:15px;color:#1a120a">${esc(item.name)}</span>
+          <div style="display:flex;align-items:center;gap:5px">
+            <button onclick="updateQty('${state.tab}','${item.id}',-1)" style="width:30px;height:30px;border-radius:9px;border:1.5px solid #e5ddd0;background:#f9f6f1;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#7a6a50;font-family:sans-serif;line-height:1">−</button>
+            <input type="number" value="${item.qty}" min="0"
+              onchange="setQtyDirect('${state.tab}','${item.id}',this.value)"
+              style="width:38px;text-align:center;border:1.5px solid #e5ddd0;border-radius:9px;padding:5px 2px;font-family:sans-serif;font-size:15px;font-weight:700;color:#1a120a;outline:none;background:white" />
+            <button onclick="updateQty('${state.tab}','${item.id}',1)" style="width:30px;height:30px;border-radius:9px;border:1.5px solid #e5ddd0;background:#f9f6f1;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;color:#7a6a50;font-family:sans-serif;line-height:1">+</button>
+          </div>
+          <span style="font-family:sans-serif;font-size:12px;color:#b0a08a;min-width:30px">${esc(item.unit)}</span>
+          <button onclick="setState({expandedId: '${item.id}' === '${state.expandedId}' ? null : '${item.id}'})" style="background:none;border:none;font-size:18px;cursor:pointer;color:#ccc;padding:0 2px">⋯</button>
+        </div>
+        ${expandedRow}
+      </div>`;
+  }).join("");
+
+  return `
+  <div style="min-height:100vh;background:#f7f4ef;font-family:Georgia,serif;max-width:430px;margin:0 auto;padding-bottom:100px">
+
+    <!-- HEADER -->
+    <div style="background:#1a120a;padding:24px 20px 0;border-radius:0 0 24px 24px;box-shadow:0 6px 24px rgba(0,0,0,.18)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:18px">
+        <div>
+          <p style="margin:0;font-size:10px;letter-spacing:3px;color:#6b5a40;text-transform:uppercase;font-family:sans-serif">Casa Malossini</p>
+          <h1 style="margin:3px 0 0;font-size:24px;color:#f5f0e6;font-weight:normal">🏺 Dispensa</h1>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button onclick="setState({modal:'backup'})" style="background:#2a2218;border:none;border-radius:12px;width:36px;height:36px;color:#9a8a6a;font-size:17px;cursor:pointer;display:flex;align-items:center;justify-content:center">💾</button>
+          <button onclick="setState({view:'order'})" style="background:${ta>0?"#f59e0b":"#2a2218"};border:none;border-radius:14px;padding:9px 14px;color:${ta>0?"#1a120a":"#6b5a40"};font-family:sans-serif;font-size:12px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:6px">
+            ${ta>0?`<span style="background:#1a120a;color:#f59e0b;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:900">${ta}</span>`:""}
+            📋 Riordino
+          </button>
+        </div>
+      </div>
+      <div style="display:flex">${tabs}</div>
+    </div>
+
+    <!-- HEADER CATEGORIA -->
+    <div style="padding:16px 16px 8px;display:flex;justify-content:space-between;align-items:center">
+      <div>
+        <h2 style="margin:0;font-size:17px;color:#1a120a;font-weight:normal">${cat.emoji} ${esc(cat.label)}</h2>
+        <p style="margin:3px 0 0;font-family:sans-serif;font-size:12px;color:#9a8a6a">
+          ${items.length} prodotti · ${items.filter(it=>getStatus(it.qty)==="ok").length} disponibili · ${items.filter(it=>getStatus(it.qty)!=="ok").length} da riordinare
+        </p>
+      </div>
+      <button onclick="setState({modal:'add',newName:'',newUnit:'conf.'})" style="background:#1a120a;color:#f5f0e6;border:none;border-radius:12px;padding:8px 14px;font-family:sans-serif;font-size:13px;cursor:pointer">+ Aggiungi</button>
+    </div>
+
+    <!-- LEGENDA -->
+    <div style="display:flex;gap:14px;padding:0 16px 10px">
+      ${[["#22c55e","2+ conf. — ok"],["#f59e0b","1 conf. — riordina"],["#ef4444","0 — esaurito"]].map(([c,l])=>
+        `<div style="display:flex;align-items:center;gap:4px"><span style="width:8px;height:8px;border-radius:50%;background:${c};display:inline-block"></span><span style="font-family:sans-serif;font-size:10px;color:#9a8a6a">${l}</span></div>`
+      ).join("")}
+    </div>
+
+    <!-- LISTA -->
+    <div style="padding:0 16px">${productRows}</div>
+
+    ${renderModalAdd()}
+    ${renderModalBackup()}
+    ${renderToast()}
+  </div>`;
+}
+
+function addItemFromModal() {
+  const nameEl = document.getElementById("newNameInput");
+  const unitEl = document.getElementById("newUnitInput");
+  if (nameEl) state.newName = nameEl.value;
+  if (unitEl) state.newUnit = unitEl.value;
+  if (!state.newName.trim()) { showToast("⚠️ Inserisci il nome"); return; }
+  addItem();
+}
+
+function renderModalAdd() {
+  if (state.modal !== "add") return "";
+  const cat = CATS[state.tab];
+  return `
+  <div onclick="setState({modal:null})" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:100;display:flex;align-items:flex-end">
+    <div onclick="event.stopPropagation()" style="background:white;border-radius:24px 24px 0 0;padding:24px 20px 52px;width:100%;max-width:430px;margin:0 auto">
+      <h3 style="margin:0 0 4px;color:#1a120a;font-size:18px;font-weight:normal">Aggiungi prodotto</h3>
+      <p style="margin:0 0 16px;font-family:sans-serif;font-size:12px;color:#9a8a6a">${cat.emoji} ${esc(cat.label)}</p>
+      <input id="newNameInput" placeholder="Nome prodotto *" autofocus
+        style="width:100%;border:1.5px solid #e5ddd0;border-radius:12px;padding:12px 14px;font-family:Georgia,serif;font-size:16px;outline:none;margin-bottom:10px;color:#1a120a" />
+      <label style="font-family:sans-serif;font-size:11px;color:#9a8a6a;display:block;margin-bottom:4px;letter-spacing:1px;text-transform:uppercase">Unità di misura</label>
+      <input id="newUnitInput" value="conf." placeholder="es. conf., kg, l, vasetto…"
+        style="width:100%;border:1.5px solid #e5ddd0;border-radius:12px;padding:10px 12px;font-family:sans-serif;font-size:14px;outline:none;margin-bottom:16px;color:#1a120a" />
+      <button onclick="addItemFromModal()" style="width:100%;background:#1a120a;color:#f5f0e6;border:none;border-radius:14px;padding:14px;font-family:sans-serif;font-size:15px;font-weight:700;cursor:pointer">
+        Aggiungi alla dispensa
+      </button>
+    </div>
+  </div>`;
+}
+
+function renderModalBackup() {
+  if (state.modal !== "backup") return "";
+  return `
+  <div onclick="setState({modal:null})" style="position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:flex;align-items:flex-end">
+    <div onclick="event.stopPropagation()" style="background:white;border-radius:24px 24px 0 0;padding:24px 20px 52px;width:100%;max-width:430px;margin:0 auto">
+      <h3 style="margin:0 0 4px;color:#1a120a;font-size:18px;font-weight:normal">💾 Backup & Ripristino</h3>
+      <p style="margin:0 0 20px;font-family:sans-serif;font-size:12px;color:#9a8a6a">Salva o ripristina i dati della dispensa</p>
+
+      <button onclick="exportJSON()" style="width:100%;background:#1a120a;color:#f5f0e6;border:none;border-radius:14px;padding:14px 16px;font-family:sans-serif;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <span style="font-size:20px">💾</span>
+        <div style="text-align:left"><div>Scarica backup JSON</div><div style="font-size:11px;font-weight:400;opacity:.6;margin-top:1px">File da reimportare in futuro</div></div>
+      </button>
+
+      <button onclick="exportText()" style="width:100%;background:#f5f0e6;color:#1a120a;border:1.5px solid #e5ddd0;border-radius:14px;padding:14px 16px;font-family:sans-serif;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:10px;margin-bottom:10px">
+        <span style="font-size:20px">📄</span>
+        <div style="text-align:left"><div>Scarica riepilogo leggibile</div><div style="font-size:11px;font-weight:400;opacity:.6;margin-top:1px">File .txt con inventario e lista riordino</div></div>
+      </button>
+
+      <label style="width:100%;background:#f0fdf4;color:#166534;border:1.5px solid #bbf7d0;border-radius:14px;padding:14px 16px;font-family:sans-serif;font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;gap:10px">
+        <span style="font-size:20px">📂</span>
+        <div style="text-align:left"><div>Ripristina da backup JSON</div><div style="font-size:11px;font-weight:400;opacity:.7;margin-top:1px">Seleziona un file .json salvato</div></div>
+        <input type="file" accept=".json" onchange="importJSON(event)" style="display:none" />
+      </label>
+    </div>
+  </div>`;
+}
+
+function renderToast() {
+  if (!state.toast) return "";
+  return `<div style="position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#1a120a;color:#f5f0e6;padding:10px 22px;border-radius:20px;font-family:sans-serif;font-size:13px;font-weight:600;box-shadow:0 4px 16px rgba(0,0,0,.3);z-index:200;white-space:nowrap">${state.toast}</div>`;
+}
+
+function attachEvents() {
+  // focus input aggiunta automaticamente
+  const ni = document.getElementById("newNameInput");
+  if (ni) setTimeout(() => ni.focus(), 50);
+}
+
+// Avvio
+render();
+</script>
+</body>
+</html>
